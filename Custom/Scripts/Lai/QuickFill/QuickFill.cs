@@ -4,15 +4,31 @@ using UnityEngine;
 
 namespace LaiLighting
 {
+    // Midpoint quadrature over a rectangle. Independent of Unity for numerical checks.
+    public static class QuickFillSampling
+    {
+        public static float Offset(int coordinate, int gridSize)
+        {
+            return (coordinate + 0.5f) / gridSize - 0.5f;
+        }
+
+        public static float Weight(int gridSize) { return 1f / (gridSize * gridSize); }
+    }
+
     // VaM 1.x / Unity 2018. No external dependencies or scene light mutation.
     public class QuickFill : MVRScript
     {
-        private readonly Light[] lamps = new Light[4];
+        // Key, fill, rim, eye, plus eight optional key samples (up to a 3x3 panel).
+        private readonly Light[] lamps = new Light[12];
         private GameObject rig;
         private FreeControllerV3 head, chest, hip;
-        private JSONStorableBool lighting, rotateWithBody, shadows, calibrated;
+        private JSONStorableBool lighting, rotateWithBody, shadows, rimShadows, calibrated;
         private JSONStorableFloat exposure, fill, rim, spread, softness, azimuth, headingOffset;
-        private JSONStorableStringChooser style;
+        private JSONStorableFloat elevation, keyElevation, rimElevation, shadowStrength, shadowBias, normalBias;
+        private JSONStorableFloat softboxWidth, softboxHeight;
+        private JSONStorableStringChooser style, layout, sampling;
+        private string displayedLayout;
+        private int displayedSamples;
         private JSONStorableString status;
         private bool ready, poseValid;
         private int warmup;
@@ -23,7 +39,7 @@ namespace LaiLighting
         {
             try
             {
-                status = new JSONStorableString("Info", "QuickFill | Portrait lighting\nAdd to a Person. Four lights follow the actual body.\nGenerate = enable lighting. Align to view = place the key light for your current viewpoint.");
+                status = new JSONStorableString("Info", "QuickFill 0.3 | Portrait lighting\nAdd to a Person. Compare Classic and Softbox in the same view.\nAlign to view places the lighting for your current viewpoint.");
                 CreateTextField(status).height = 145f;
                 if (containingAtom == null || containingAtom.type != "Person")
                 {
@@ -41,6 +57,14 @@ namespace LaiLighting
                 CreateButton("Generate / rebuild lighting").button.onClick.AddListener(Generate);
                 CreateButton("Align lighting to current view").button.onClick.AddListener(AlignToView);
                 CreateButton("Remove lighting").button.onClick.AddListener(RemoveLighting);
+                layout = new JSONStorableStringChooser("Lighting layout", new List<string> { "Classic (4 lights)", "Softbox (sampled key)" }, "Classic (4 lights)", "Lighting layout");
+                RegisterStringChooser(layout); CreatePopup(layout);
+                CreateButton("A/B: Classic / Softbox").button.onClick.AddListener(ToggleLayout);
+                RegisterAction(new JSONStorableAction("Toggle Classic / Softbox", ToggleLayout));
+                sampling = new JSONStorableStringChooser("Softbox quality", new List<string> { "Balanced (4 samples)", "High (9 samples)" }, "Balanced (4 samples)", "Softbox quality");
+                RegisterStringChooser(sampling); CreatePopup(sampling);
+                softboxWidth = Slider("Softbox width (m)", 0.8f, 0f, 2f, false);
+                softboxHeight = Slider("Softbox height (m)", 1f, 0f, 2f, false);
                 style = new JSONStorableStringChooser("Look", new List<string> { "Soft Portrait", "Clean Studio", "Cinematic" }, "Soft Portrait", "Look");
                 RegisterStringChooser(style); CreatePopup(style);
                 exposure = Slider("Overall brightness", 1f, 0f, 2.5f, false);
@@ -48,11 +72,19 @@ namespace LaiLighting
                 rim = Slider("Rim amount", 1f, 0f, 2f, false);
                 spread = Slider("Rig distance", 1f, 0.65f, 1.6f, true);
                 azimuth = Slider("Light direction", 0f, -180f, 180f, true);
+                elevation = Slider("Rig elevation offset", 0f, -45f, 45f, true);
+                keyElevation = Slider("Key elevation", 25f, -30f, 75f, true);
+                rimElevation = Slider("Rim elevation", 30f, -30f, 75f, true);
                 softness = Slider("Follow smoothing (seconds)", 0.18f, 0f, 0.8f, true);
                 rotateWithBody = new JSONStorableBool("Follow body turns", true);
                 RegisterBool(rotateWithBody); CreateToggle(rotateWithBody, true);
                 shadows = new JSONStorableBool("Key light soft shadows", true);
                 RegisterBool(shadows); CreateToggle(shadows, true);
+                rimShadows = new JSONStorableBool("Rim light soft shadows", true);
+                RegisterBool(rimShadows); CreateToggle(rimShadows, true);
+                shadowStrength = Slider("Shadow strength", 0.95f, 0f, 1f, true);
+                shadowBias = Slider("Shadow depth bias", 0.015f, 0f, 0.08f, true);
+                normalBias = Slider("Shadow normal bias", 0.025f, 0f, 0.2f, true);
                 headingOffset = new JSONStorableFloat("Saved heading offset", 0f, -720f, 720f, false);
                 RegisterFloat(headingOffset);
                 calibrated = new JSONStorableBool("View calibrated", false);
@@ -60,7 +92,7 @@ namespace LaiLighting
                 RegisterAction(new JSONStorableAction("Generate lighting", Generate));
                 RegisterAction(new JSONStorableAction("Align to view", AlignToView));
                 RegisterAction(new JSONStorableAction("Remove lighting", RemoveLighting));
-                CreateTextField(new JSONStorableString("Tips", "Soft Portrait: warm key, neutral fill, cool rim.\nClean Studio: neutral, brighter fill.\nCinematic: deeper contrast, warm/cool separation.\n\nExisting scene lights remain active. If the image is too bright, reduce Overall brightness.\nOnly the key casts shadows to keep the rig lightweight.\nSettings are saved with the scene / plugin preset."), true).height = 260f;
+                CreateTextField(new JSONStorableString("Tips", "A/B preserves brightness, direction, style and follow position. Classic uses the previous four-light layout. Softbox replaces only the key with 4 or 9 distributed lights; total key intensity stays constant.\n\nWidth / height scale with the person. Larger panels soften the transition but can show multiple shadows. Try High or a smaller panel. Enable Key light soft shadows for shadow softening.\n\nElevation: positive = above, negative = below. Existing scene lights stay active. Softbox costs more GPU time; it is an approximation, not a real area light."), true).height = 350f;
                 ready = true;
             }
             catch (Exception e)
@@ -124,6 +156,12 @@ namespace LaiLighting
             poseValid = false;
         }
 
+        public void ToggleLayout()
+        {
+            if (!ready) return;
+            layout.val = layout.val == "Softbox (sampled key)" ? "Classic (4 lights)" : "Softbox (sampled key)";
+        }
+
         public void RemoveLighting()
         {
             if (!ready) return;
@@ -140,15 +178,17 @@ namespace LaiLighting
                 string[] names = { "Key", "Fill", "Rim", "Eye" };
                 for (int i = 0; i < lamps.Length; i++)
                 {
-                    GameObject child = new GameObject("QuickFill " + names[i]);
+                    GameObject child = new GameObject("QuickFill " + (i < 4 ? names[i] : "Key sample " + (i - 2)));
                     child.transform.SetParent(rig.transform, false);
                     Light light = child.AddComponent<Light>();
                     lamps[i] = light;
                     light.type = LightType.Spot;
                     light.renderMode = LightRenderMode.ForcePixel;
                     light.shadows = LightShadows.None;
-                    light.shadowBias = 0.035f;
-                    light.shadowNormalBias = 0.12f;
+                    light.enabled = i < 4;
+                    light.shadowBias = shadowBias.val;
+                    light.shadowNormalBias = normalBias.val;
+                    light.shadowCustomResolution = i == 0 ? 2048 : 1024;
                     light.shadowNearPlane = 0.12f;
                     light.bounceIntensity = 0f;
                     // Exclude UI / hidden helper layers; VaM scene geometry uses Default.
@@ -207,15 +247,16 @@ namespace LaiLighting
                 bool studio = style.val == "Clean Studio";
                 Color keyColor = studio ? new Color(1f, 0.96f, 0.91f) : new Color(1f, 0.87f, 0.75f);
                 Color rimColor = studio ? new Color(0.91f, 0.95f, 1f) : new Color(0.68f, 0.82f, 1f);
-                Setup(0, new Vector3(-1.25f, 0.65f, 1.65f), new Vector3(0f, -0.10f, 0f), distance, 2.4f, keyColor, 78f);
+                Setup(0, new Vector3(-1.25f, 0.65f, 1.65f), new Vector3(0f, -0.10f, 0f), keyElevation.val, distance, 2.4f, keyColor, 72f);
                 Setup(1, new Vector3(1.35f, 0.18f, 1.35f), new Vector3(0f, -0.20f, 0f), distance,
-                    (cinema ? 0.38f : studio ? 1.15f : 0.80f) * fill.val, new Color(0.91f, 0.95f, 1f), 95f);
-                Setup(2, new Vector3(0.95f, 0.75f, -1.25f), new Vector3(0f, -0.15f, 0f), distance,
-                    (cinema ? 2.1f : 1.55f) * rim.val, rimColor, 72f);
+                    (cinema ? 0.28f : studio ? 0.85f : 0.55f) * fill.val, new Color(0.91f, 0.95f, 1f), 95f);
+                Setup(2, new Vector3(1.15f, 0.75f, -1.35f), new Vector3(0f, -0.22f, 0f), rimElevation.val, distance,
+                    (cinema ? 1.8f : 1.35f) * rim.val, rimColor, 65f);
                 Setup(3, new Vector3(0.10f, 0.20f, 1.65f), Vector3.zero, distance,
-                    cinema ? 0.12f : 0.22f, new Color(1f, 0.96f, 0.91f), 65f);
-                lamps[0].shadows = shadows.val ? LightShadows.Soft : LightShadows.None;
-                lamps[0].shadowStrength = 0.85f;
+                    cinema ? 0.08f : 0.14f, new Color(1f, 0.96f, 0.91f), 65f);
+                ConfigureShadow(lamps[0], shadows.val);
+                ConfigureShadow(lamps[2], rimShadows.val);
+                ApplyLayout(distance);
                 rig.SetActive(true);
             }
             catch (Exception e)
@@ -229,13 +270,82 @@ namespace LaiLighting
 
         private void Setup(int index, Vector3 position, Vector3 aim, float scale, float intensity, Color color, float angle)
         {
+            Vector3 offset = position - aim;
+            float baseElevation = Mathf.Atan2(offset.y, new Vector2(offset.x, offset.z).magnitude) * Mathf.Rad2Deg;
+            Setup(index, position, aim, baseElevation, scale, intensity, color, angle);
+        }
+
+        private void Setup(int index, Vector3 position, Vector3 aim, float baseElevation, float scale, float intensity, Color color, float angle)
+        {
             Light light = lamps[index];
+            // Orbit each lamp around its aim point, preserving distance and horizontal bearing.
+            // Pitching the whole rig would raise front lights but lower rear lights.
+            Vector3 offset = position - aim;
+            float radius = offset.magnitude;
+            float pitch = Mathf.Clamp(baseElevation + elevation.val, -75f, 85f) * Mathf.Deg2Rad;
+            Vector3 horizontal = new Vector3(offset.x, 0f, offset.z).normalized;
+            position = aim + radius * (horizontal * Mathf.Cos(pitch) + Vector3.up * Mathf.Sin(pitch));
             light.transform.localPosition = position * scale;
             light.transform.localRotation = Quaternion.LookRotation((aim - position).normalized, Vector3.up);
             light.range = 6f * scale;
             light.spotAngle = angle;
             light.intensity = intensity * exposure.val;
             light.color = color;
+        }
+
+        private void ConfigureShadow(Light light, bool active)
+        {
+            light.shadows = active ? LightShadows.Soft : LightShadows.None;
+            light.shadowStrength = shadowStrength.val;
+            light.shadowBias = shadowBias.val;
+            light.shadowNormalBias = normalBias.val;
+        }
+
+        private void ApplyLayout(float distance)
+        {
+            bool useSoftbox = layout.val == "Softbox (sampled key)";
+            int grid = sampling.val == "High (9 samples)" ? 3 : 2;
+            int count = useSoftbox ? grid * grid : 1;
+            // Disable unused samples before configuring the active ones, with no rebuild or pose reset.
+            for (int i = 4; i < lamps.Length; i++)
+            {
+                lamps[i].enabled = useSoftbox && i - 3 < count;
+                if (!lamps[i].enabled) lamps[i].shadows = LightShadows.None;
+            }
+            Light key = lamps[0];
+            key.shadowCustomResolution = useSoftbox ? 1024 : 2048;
+            if (useSoftbox)
+            {
+                // Capture the center before sample 0 moves the original key.
+                Vector3 center = key.transform.localPosition;
+                Quaternion orientation = key.transform.localRotation;
+                Vector3 aim = new Vector3(0f, -0.10f, 0f) * distance;
+                float totalIntensity = key.intensity;
+                for (int sample = 0; sample < count; sample++)
+                {
+                    Light light = lamps[sample == 0 ? 0 : sample + 3];
+                    Vector3 panelOffset = new Vector3(
+                        QuickFillSampling.Offset(sample % grid, grid) * softboxWidth.val,
+                        QuickFillSampling.Offset(sample / grid, grid) * softboxHeight.val, 0f);
+                    Vector3 position = center + orientation * (panelOffset * smoothSize);
+                    light.transform.localPosition = position;
+                    light.transform.localRotation = Quaternion.LookRotation(aim - position, orientation * Vector3.up);
+                    light.range = key.range;
+                    light.spotAngle = key.spotAngle;
+                    light.color = key.color;
+                    light.intensity = totalIntensity * QuickFillSampling.Weight(grid);
+                    light.shadowCustomResolution = 1024;
+                    ConfigureShadow(light, shadows.val);
+                }
+            }
+            if (displayedLayout != layout.val || displayedSamples != count)
+            {
+                displayedLayout = layout.val;
+                displayedSamples = count;
+                status.val = "QuickFill 0.3 | " + (useSoftbox ? "Softbox" : "Classic") +
+                    "\n" + (count + 3) + " active lights; " + count + " key sample(s)." +
+                    "\nA/B keeps your pose and settings. Total key intensity is shared; perceived brightness may differ.";
+            }
         }
 
         private void DestroyRig()
