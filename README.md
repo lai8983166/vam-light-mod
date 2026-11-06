@@ -16,6 +16,8 @@
 
 ## 0.3 更新：经典 / 柔光箱 A/B 对比
 
+0.3.1 修复单文件加载时报 `must inherit from MVRScript` 的入口类型顺序问题。已加载旧版时，点击插件 Reload 重新加载修复文件。
+
 重新加载插件后，点击 **A/B: Classic / Softbox**，或使用 **Lighting layout** 下拉框切换。默认 Classic，旧场景加载后不会自动启用更耗性能的柔光箱。
 
 - **Classic (4 lights)**：0.2 的四灯布局，包含上一轮新增的阴影和垂直角度调整；不是回退到最早的 0.1。
@@ -97,4 +99,4 @@
 
 源码在 `Custom/Scripts/Lai/QuickFill/QuickFill.cs`。运行 `tools/Build.ps1` 使用本机 VaM 程序集编译验证；生成 DLL 仅用于验证，VaM 实际加载 `.cs`。
 
-运行 `tools/Test.ps1` 编译并检查实际采样辅助代码的总权重、对称中心、边界、非退化分布与部分遮挡条件。数值测试不替代 Unity 实机渲染验证。
+运行 `tools/Test.ps1` 编译并检查实际采样辅助代码的总权重、对称中心、边界、非退化分布与部分遮挡条件，同时检查编译程序集的首个类型是 QuickFill : MVRScript。入口检查使用本机 VaM 的 Mono.Cecil，仅用于开发，不是插件运行依赖。这些检查不替代 Unity 实机渲染验证。

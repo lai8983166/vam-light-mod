@@ -4,17 +4,7 @@ using UnityEngine;
 
 namespace LaiLighting
 {
-    // Midpoint quadrature over a rectangle. Independent of Unity for numerical checks.
-    public static class QuickFillSampling
-    {
-        public static float Offset(int coordinate, int gridSize)
-        {
-            return (coordinate + 0.5f) / gridSize - 0.5f;
-        }
-
-        public static float Weight(int gridSize) { return 1f / (gridSize * gridSize); }
-    }
-
+    // Keep the MVRScript entry type first: VaM's single-file loader selects the main type.
     // VaM 1.x / Unity 2018. No external dependencies or scene light mutation.
     public class QuickFill : MVRScript
     {
@@ -359,5 +349,16 @@ namespace LaiLighting
         private void OnDisable() { DestroyRig(); }
         private void OnEnable() { poseValid = false; warmup = 0; }
         private void OnDestroy() { ready = false; DestroyRig(); }
+    }
+
+    // Helper types must follow the MVRScript entry type for single-file VaM loading.
+    public static class QuickFillSampling
+    {
+        public static float Offset(int coordinate, int gridSize)
+        {
+            return (coordinate + 0.5f) / gridSize - 0.5f;
+        }
+
+        public static float Weight(int gridSize) { return 1f / (gridSize * gridSize); }
     }
 }

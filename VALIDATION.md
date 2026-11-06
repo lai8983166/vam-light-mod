@@ -1,5 +1,13 @@
 # QuickFill 验证记录
 
+## 0.3.1 单文件入口修复 — 2026-11-06
+
+- 用户实测 0.3 加载报错 must inherit from MVRScript。
+- 检查本机加载器确认 CompileAndLoadScriptFile 返回 MainType，而 MainType 使用 Assembly.GetTypes()[0]。0.3 将 QuickFillSampling 放在入口类前面，导致选中了辅助类。
+- 将 QuickFill : MVRScript 移到首个类型，采样辅助类放到后面。
+- 新增编译程序集类型顺序回归检查：旧构建失败（QuickFillSampling），修复构建通过（QuickFill : MVRScript）。编译及 2×2 / 3×3 采样测试也通过。
+- 检查覆盖单文件入口的类型顺序，尚不代表已在 VaM 内完成视觉和运行验收。
+
 ## 0.3 柔光箱更新 — 2026-11-06
 
 - 通过本机 VaM 程序集编译。
